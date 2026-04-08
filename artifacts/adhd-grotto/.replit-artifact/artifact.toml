@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "ADHD Grotto"
+version = "1.0.0"
+id = "artifacts/adhd-grotto"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25232
+
+[services.development]
+run = "pnpm --filter @workspace/adhd-grotto run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/adhd-grotto", "run", "build" ]
+publicDir = "artifacts/adhd-grotto/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25232"
+BASE_PATH = "/"

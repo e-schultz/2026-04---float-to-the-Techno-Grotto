@@ -1,0 +1,320 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --font-sans: var(--app-font-sans);
+  --font-mono: var(--app-font-mono);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+}
+
+:root {
+  --background: 0 0% 3%;
+  --foreground: 0 0% 90%;
+  --border: 0 0% 12%;
+  --primary: 183 100% 45%;
+  --primary-foreground: 0 0% 3%;
+  --muted: 0 0% 8%;
+  --muted-foreground: 0 0% 50%;
+  --accent: 270 80% 60%;
+  --accent-foreground: 0 0% 3%;
+  --app-font-sans: 'Space Grotesk', 'Inter', sans-serif;
+  --app-font-mono: 'Space Mono', Menlo, monospace;
+  --radius: .25rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #080808;
+    color: hsl(var(--foreground));
+    font-family: var(--app-font-mono), monospace;
+  }
+}
+
+.grotto-ui {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.grotto-ui > * {
+  pointer-events: auto;
+}
+
+.grotto-canvas {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+}
+
+/* Scanline overlay */
+.scanlines {
+  position: fixed;
+  inset: 0;
+  z-index: 5;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.08) 2px,
+    rgba(0, 0, 0, 0.08) 4px
+  );
+  pointer-events: none;
+}
+
+/* Vignette overlay */
+.vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 40%,
+    rgba(0, 0, 0, 0.7) 100%
+  );
+  pointer-events: none;
+}
+
+.grotto-title {
+  position: fixed;
+  top: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--app-font-mono), monospace;
+  font-size: 11px;
+  letter-spacing: 0.35em;
+  text-transform: uppercase;
+  color: rgba(0, 220, 210, 0.5);
+  z-index: 20;
+  white-space: nowrap;
+}
+
+.grotto-bpm {
+  position: fixed;
+  top: 28px;
+  right: 32px;
+  font-family: var(--app-font-mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: rgba(0, 220, 210, 0.4);
+  z-index: 20;
+}
+
+.grotto-bpm span {
+  color: rgba(0, 220, 210, 0.8);
+  font-size: 16px;
+  margin-right: 4px;
+}
+
+.start-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #070707;
+  transition: opacity 0.8s ease;
+}
+
+.start-overlay.fading {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.start-glyph {
+  width: 100px;
+  height: 100px;
+  border: 1px solid rgba(0, 220, 210, 0.3);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 32px;
+  position: relative;
+  cursor: pointer;
+}
+
+.start-glyph::before {
+  content: '';
+  position: absolute;
+  inset: 8px;
+  border: 1px solid rgba(0, 220, 210, 0.15);
+  border-radius: 50%;
+}
+
+.start-glyph .play-icon {
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 14px 0 14px 24px;
+  border-color: transparent transparent transparent rgba(0, 220, 210, 0.8);
+  margin-left: 6px;
+}
+
+.start-label {
+  font-family: var(--app-font-mono), monospace;
+  font-size: 10px;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+  color: rgba(0, 220, 210, 0.45);
+  margin-bottom: 12px;
+}
+
+.start-sublabel {
+  font-family: var(--app-font-mono), monospace;
+  font-size: 9px;
+  letter-spacing: 0.25em;
+  color: rgba(255, 255, 255, 0.2);
+  text-align: center;
+  max-width: 240px;
+  line-height: 1.8;
+}
+
+.controls-bar {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  z-index: 20;
+}
+
+.ctrl-btn {
+  background: none;
+  border: 1px solid rgba(0, 220, 210, 0.2);
+  color: rgba(0, 220, 210, 0.5);
+  font-family: var(--app-font-mono), monospace;
+  font-size: 9px;
+  letter-spacing: 0.25em;
+  text-transform: uppercase;
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.ctrl-btn:hover {
+  border-color: rgba(0, 220, 210, 0.6);
+  color: rgba(0, 220, 210, 0.9);
+  background: rgba(0, 220, 210, 0.05);
+}
+
+.ctrl-btn.active {
+  background: rgba(0, 220, 210, 0.1);
+  border-color: rgba(0, 220, 210, 0.5);
+  color: rgba(0, 220, 210, 0.9);
+}
+
+.intensity-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.intensity-label {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  color: rgba(255, 255, 255, 0.2);
+}
+
+.intensity-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 80px;
+  height: 2px;
+  background: rgba(0, 220, 210, 0.15);
+  outline: none;
+  cursor: pointer;
+}
+
+.intensity-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(0, 220, 210, 0.7);
+  cursor: pointer;
+}
+
+.vu-meter {
+  position: fixed;
+  left: 28px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  z-index: 20;
+}
+
+.vu-bar {
+  width: 3px;
+  height: 6px;
+  background: rgba(0, 220, 210, 0.15);
+  transition: background 0.05s ease;
+}
+
+.vu-bar.active {
+  background: rgba(0, 220, 210, 0.8);
+}
+
+.vu-bar.mid {
+  background: rgba(150, 100, 255, 0.8);
+}
+
+.vu-bar.peak {
+  background: rgba(255, 100, 100, 0.9);
+}
+
+.grain-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 7;
+  opacity: 0.03;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); opacity: 0.7; }
+  50% { transform: scale(1.05); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.7; }
+}
+
+.start-glyph:hover {
+  animation: pulse-ring 1.5s ease-in-out infinite;
+}
+
+@keyframes flicker {
+  0%, 98%, 100% { opacity: 1; }
+  99% { opacity: 0.85; }
+}
+
+.grotto-title {
+  animation: flicker 8s ease-in-out infinite;
+}
