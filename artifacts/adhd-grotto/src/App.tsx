@@ -97,8 +97,8 @@ export default function App() {
   const handleStart = useCallback(async () => {
     setStarted(true);
     await start();
-    setEngineIntensity(0.5);
-  }, [start, setEngineIntensity]);
+    setEngineIntensity(intensity);
+  }, [start, setEngineIntensity, intensity]);
 
   const handleStop = useCallback(() => {
     if (audioState.isPlaying) {

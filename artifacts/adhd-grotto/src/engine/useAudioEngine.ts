@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { AudioEngine, AudioState } from "./AudioEngine";
 
 const defaultState: AudioState = {
@@ -12,46 +12,41 @@ const defaultState: AudioState = {
 };
 
 let sharedEngine: AudioEngine | null = null;
-let initialized = false;
+
+function getEngine(): AudioEngine {
+  if (!sharedEngine) {
+    sharedEngine = new AudioEngine();
+  }
+  return sharedEngine;
+}
 
 export function useAudioEngine() {
   const [audioState, setAudioState] = useState<AudioState>(defaultState);
 
   useEffect(() => {
-    if (!sharedEngine) {
-      sharedEngine = new AudioEngine();
-    }
-
-    const unsub = sharedEngine.subscribe((state) => {
+    const engine = getEngine();
+    const unsub = engine.subscribe((state) => {
       setAudioState({ ...state });
     });
-
     return () => {
       unsub();
     };
   }, []);
 
   const start = useCallback(async () => {
-    if (!sharedEngine) {
-      sharedEngine = new AudioEngine();
-    }
-    if (!initialized) {
-      await sharedEngine.init();
-      initialized = true;
-    }
-    await sharedEngine.start();
+    await getEngine().start();
   }, []);
 
   const stop = useCallback(() => {
-    sharedEngine?.stop();
+    getEngine().stop();
   }, []);
 
   const setBPM = useCallback((bpm: number) => {
-    sharedEngine?.setBPM(bpm);
+    getEngine().setBPM(bpm);
   }, []);
 
   const setIntensity = useCallback((i: number) => {
-    sharedEngine?.setIntensity(i);
+    getEngine().setIntensity(i);
   }, []);
 
   return { audioState, start, stop, setBPM, setIntensity };
