@@ -49,5 +49,9 @@ export function useAudioEngine() {
     getEngine().setIntensity(i);
   }, []);
 
-  return { audioState, start, stop, setBPM, setIntensity };
+  const triggerTap = useCallback(() => {
+    getEngine().triggerTap();
+  }, []);
+
+  return { audioState, start, stop, setBPM, setIntensity, triggerTap };
 }

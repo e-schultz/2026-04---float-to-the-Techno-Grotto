@@ -1,17 +1,30 @@
-import { useRef, useMemo, useEffect } from "react";
+import { useRef, useMemo, useEffect, useCallback } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { AudioState } from "../engine/AudioEngine";
 
-interface GrottoSceneProps {
-  audioState: AudioState;
+export interface RippleEvent {
+  x: number;
+  y: number;
+  time: number;
 }
 
-// GLSL shaders for the industrial wub-reactive floor
+interface GrottoSceneProps {
+  audioState: AudioState;
+  mousePos: { x: number; y: number };
+  ripples: RippleEvent[];
+  idleFactor: number;
+}
+
 const floorVertexShader = `
 uniform float uTime;
 uniform float uBass;
 uniform float uKick;
+uniform float uMouseX;
+uniform float uMouseY;
+uniform float uRipple0;
+uniform float uRipple0X;
+uniform float uRipple0Y;
 varying vec2 vUv;
 varying float vElevation;
 
@@ -22,8 +35,17 @@ void main() {
   float wave1 = sin(pos.x * 3.0 + uTime * 0.8) * 0.06 * (uBass + 0.1);
   float wave2 = sin(pos.z * 2.0 - uTime * 0.6) * 0.04 * (uBass + 0.1);
   float ripple = sin(length(pos.xz) * 4.0 - uTime * 2.0) * 0.05 * uKick;
-  pos.y += wave1 + wave2 + ripple;
-  vElevation = wave1 + wave2 + ripple;
+  
+  // Mouse influence — gentle warping toward cursor
+  float mouseDist = length(pos.xz - vec2(uMouseX, uMouseY) * 8.0);
+  float mouseWave = sin(mouseDist * 2.0 - uTime * 3.0) * 0.03 / (1.0 + mouseDist * 0.3);
+  
+  // Click ripple
+  float rDist = length(pos.xz - vec2(uRipple0X, uRipple0Y) * 8.0);
+  float rWave = sin(rDist * 5.0 - uTime * 8.0) * 0.08 * uRipple0 / (1.0 + rDist * 0.2);
+  
+  pos.y += wave1 + wave2 + ripple + mouseWave + rWave;
+  vElevation = wave1 + wave2 + ripple + mouseWave + rWave;
   
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
 }
@@ -34,8 +56,22 @@ uniform float uTime;
 uniform float uBass;
 uniform float uKick;
 uniform float uMid;
+uniform float uHueShift;
+uniform float uRipple0;
+uniform float uRipple0X;
+uniform float uRipple0Y;
 varying vec2 vUv;
 varying float vElevation;
+
+vec3 hueShift(vec3 color, float shift) {
+  float angle = shift * 6.28318;
+  float s = sin(angle);
+  float c = cos(angle);
+  vec3 weights = vec3(0.2126, 0.7152, 0.0722);
+  float p = dot(color, weights);
+  vec3 a = vec3(p) + vec3(1.0-c, -s*0.57735, s*0.57735) * (color - vec3(p));
+  return clamp(a + vec3(-s*0.57735, s*0.57735, 1.0-c) * cross(vec3(p), color - vec3(p)), 0.0, 1.0);
+}
 
 float grid(vec2 uv, float size) {
   vec2 g = abs(fract(uv * size) - 0.5);
@@ -55,14 +91,17 @@ void main() {
   vec3 col = mix(baseColor, gridColor2 * 0.4, g1);
   col = mix(col, gridColor1 * 0.8, g2 * 0.7);
   
-  // Elevation glow
   float elevGlow = max(0.0, vElevation * 6.0);
   col += vec3(0.0, elevGlow * 0.3, elevGlow * 0.25) * uBass;
-  
-  // Kick pulse
   col += vec3(0.05, 0.15, 0.15) * uKick * 0.5;
   
-  // Distance fade
+  // Click ripple glow
+  float rDist = length(uv - vec2(0.5 + uRipple0X * 0.5, 0.5 + uRipple0Y * 0.5));
+  float rGlow = uRipple0 * 0.3 * max(0.0, 1.0 - rDist * 4.0);
+  col += vec3(0.1, 0.4, 0.4) * rGlow;
+  
+  col = hueShift(col, uHueShift);
+  
   float dist = length(uv - 0.5) * 2.0;
   float fade = 1.0 - smoothstep(0.7, 1.2, dist);
   
@@ -70,12 +109,14 @@ void main() {
 }
 `;
 
-// Pulsating toroidal wub shape
 const wubVertexShader = `
 uniform float uTime;
 uniform float uBass;
 uniform float uKick;
 uniform float uMid;
+uniform float uBreath;
+uniform float uMouseX;
+uniform float uMouseY;
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying float vDisplace;
@@ -136,6 +177,14 @@ void main() {
   float disp = n * 0.12 * (1.0 + uBass * 1.5) + n2 * 0.06 * uMid;
   disp += uKick * 0.18 * (1.0 - length(pos) * 0.2);
   
+  // Breathing pulse
+  disp += uBreath * 0.04;
+  
+  // Mouse warp — cursor gently pulls the shape
+  vec2 mouseDir = vec2(uMouseX, uMouseY) * 0.15;
+  pos.x += mouseDir.x * (1.0 - abs(normal.x)) * 0.3;
+  pos.y += mouseDir.y * (1.0 - abs(normal.y)) * 0.3;
+  
   pos += normal * disp;
   vDisplace = disp;
   
@@ -148,9 +197,21 @@ uniform float uTime;
 uniform float uBass;
 uniform float uKick;
 uniform float uMid;
+uniform float uHueShift;
+uniform float uBreath;
 varying vec3 vNormal;
 varying vec3 vPosition;
 varying float vDisplace;
+
+vec3 hueShift(vec3 color, float shift) {
+  float angle = shift * 6.28318;
+  float s = sin(angle);
+  float c = cos(angle);
+  vec3 weights = vec3(0.2126, 0.7152, 0.0722);
+  float p = dot(color, weights);
+  vec3 a = vec3(p) + vec3(1.0-c, -s*0.57735, s*0.57735) * (color - vec3(p));
+  return clamp(a + vec3(-s*0.57735, s*0.57735, 1.0-c) * cross(vec3(p), color - vec3(p)), 0.0, 1.0);
+}
 
 void main() {
   vec3 teal = vec3(0.0, 0.85, 0.82);
@@ -163,25 +224,29 @@ void main() {
   vec3 col = mix(dark, teal, facing * (0.4 + uBass * 0.5));
   col = mix(col, purple, (1.0 - facing) * uMid * 0.6);
   
-  // Displacement glow
+  // Displacement glow — bloom-like effect on bright edges
   float dispGlow = max(0.0, vDisplace * 4.0);
   col += teal * dispGlow * 0.5;
   
-  // Kick flash
+  // Bloom emulation — bright edges get brighter
+  float edgeGlow = pow(1.0 - facing, 3.0);
+  col += teal * edgeGlow * (0.2 + uBass * 0.5 + uBreath * 0.15);
+  
   col += vec3(0.1, 0.3, 0.3) * uKick;
   
-  // Rim light
+  // Rim light with breathing
   float rim = 1.0 - facing;
-  col += teal * rim * rim * 0.3;
+  col += teal * rim * rim * (0.3 + uBreath * 0.1);
+  
+  col = hueShift(col, uHueShift);
   
   gl_FragColor = vec4(col, 0.92);
 }
 `;
 
-// Particle dust cloud
-function ParticleField({ audioState }: { audioState: AudioState }) {
+function ParticleField({ audioState, hueTime }: { audioState: AudioState; hueTime: number }) {
   const pointsRef = useRef<THREE.Points>(null!);
-  const count = 1200;
+  const count = 1500;
 
   const [positions, speeds] = useMemo(() => {
     const pos = new Float32Array(count * 3);
@@ -217,6 +282,8 @@ function ParticleField({ audioState }: { audioState: AudioState }) {
     const mat = pointsRef.current.material as THREE.PointsMaterial;
     mat.opacity = 0.25 + audioState.bassLevel * 0.4;
     mat.size = 0.015 + audioState.kick * 0.04;
+    const hue = (hueTime * 0.01) % 1;
+    mat.color.setHSL(0.48 + hue * 0.08, 0.8, 0.5);
   });
 
   const geometry = useMemo(() => {
@@ -240,8 +307,7 @@ function ParticleField({ audioState }: { audioState: AudioState }) {
   );
 }
 
-// Main wub orb
-function WubOrb({ audioState }: { audioState: AudioState }) {
+function WubOrb({ audioState, mousePos, hueTime }: { audioState: AudioState; mousePos: { x: number; y: number }; hueTime: number }) {
   const meshRef = useRef<THREE.Mesh>(null!);
   const uniforms = useMemo(
     () => ({
@@ -249,20 +315,30 @@ function WubOrb({ audioState }: { audioState: AudioState }) {
       uBass: { value: 0 },
       uKick: { value: 0 },
       uMid: { value: 0 },
+      uBreath: { value: 0 },
+      uMouseX: { value: 0 },
+      uMouseY: { value: 0 },
+      uHueShift: { value: 0 },
     }),
     []
   );
 
   useFrame(({ clock }) => {
-    uniforms.uTime.value = clock.getElapsedTime();
+    const t = clock.getElapsedTime();
+    uniforms.uTime.value = t;
     uniforms.uBass.value += (audioState.bassLevel - uniforms.uBass.value) * 0.12;
     uniforms.uKick.value += (audioState.kick - uniforms.uKick.value) * 0.25;
     uniforms.uMid.value += (audioState.midLevel - uniforms.uMid.value) * 0.08;
+    uniforms.uBreath.value = Math.sin(t * 0.3) * 0.5 + 0.5;
+    uniforms.uMouseX.value += (mousePos.x - uniforms.uMouseX.value) * 0.04;
+    uniforms.uMouseY.value += (mousePos.y - uniforms.uMouseY.value) * 0.04;
+    uniforms.uHueShift.value = (hueTime * 0.01) % 1 * 0.08;
 
     if (meshRef.current) {
-      meshRef.current.rotation.y = clock.getElapsedTime() * 0.08;
-      meshRef.current.rotation.x = Math.sin(clock.getElapsedTime() * 0.07) * 0.15;
-      const scale = 1 + audioState.bassLevel * 0.12 + audioState.kick * 0.08;
+      meshRef.current.rotation.y = t * 0.08;
+      meshRef.current.rotation.x = Math.sin(t * 0.07) * 0.15;
+      const breath = Math.sin(t * 0.3) * 0.03;
+      const scale = 1 + audioState.bassLevel * 0.12 + audioState.kick * 0.08 + breath;
       meshRef.current.scale.setScalar(scale);
     }
   });
@@ -281,8 +357,7 @@ function WubOrb({ audioState }: { audioState: AudioState }) {
   );
 }
 
-// Orbiting industrial rings
-function IndustrialRings({ audioState }: { audioState: AudioState }) {
+function IndustrialRings({ audioState, hueTime }: { audioState: AudioState; hueTime: number }) {
   const groupRef = useRef<THREE.Group>(null!);
   const rings = useMemo(
     () =>
@@ -292,7 +367,6 @@ function IndustrialRings({ audioState }: { audioState: AudioState }) {
         tiltX: (i * Math.PI) / 7,
         tiltZ: (i * Math.PI) / 9,
         speed: 0.04 + i * 0.015,
-        color: i % 2 === 0 ? new THREE.Color(0, 0.7, 0.7) : new THREE.Color(0.4, 0.1, 0.8),
       })),
     []
   );
@@ -300,6 +374,7 @@ function IndustrialRings({ audioState }: { audioState: AudioState }) {
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
     const t = clock.getElapsedTime();
+    const hue = (hueTime * 0.01) % 1;
     groupRef.current.children.forEach((child, i) => {
       const r = rings[i];
       child.rotation.y = t * r.speed * (1 + audioState.bassLevel * 0.5);
@@ -307,6 +382,13 @@ function IndustrialRings({ audioState }: { audioState: AudioState }) {
       child.rotation.z = r.tiltZ + Math.cos(t * 0.1 + i) * 0.04;
       const scale = 1 + audioState.kick * 0.06 * (i + 1) * 0.2;
       child.scale.setScalar(scale);
+      const mat = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      if (i % 2 === 0) {
+        mat.color.setHSL(0.48 + hue * 0.08, 0.8, 0.45);
+      } else {
+        mat.color.setHSL(0.75 + hue * 0.05, 0.7, 0.4);
+      }
+      mat.opacity = 0.35 + i * 0.06 + audioState.bassLevel * 0.15;
     });
   });
 
@@ -316,7 +398,7 @@ function IndustrialRings({ audioState }: { audioState: AudioState }) {
         <mesh key={i}>
           <torusGeometry args={[r.radius, r.tube, 8, 128]} />
           <meshBasicMaterial
-            color={r.color}
+            color={i % 2 === 0 ? 0x00b0b0 : 0x6020cc}
             transparent
             opacity={0.4 + i * 0.06}
             blending={THREE.AdditiveBlending}
@@ -328,29 +410,48 @@ function IndustrialRings({ audioState }: { audioState: AudioState }) {
   );
 }
 
-// Reactive floor grid
-function ReactiveFloor({ audioState }: { audioState: AudioState }) {
-  const meshRef = useRef<THREE.Mesh>(null!);
+function ReactiveFloor({ audioState, mousePos, ripples, hueTime }: { audioState: AudioState; mousePos: { x: number; y: number }; ripples: RippleEvent[]; hueTime: number }) {
   const uniforms = useMemo(
     () => ({
       uTime: { value: 0 },
       uBass: { value: 0 },
       uKick: { value: 0 },
       uMid: { value: 0 },
+      uMouseX: { value: 0 },
+      uMouseY: { value: 0 },
+      uHueShift: { value: 0 },
+      uRipple0: { value: 0 },
+      uRipple0X: { value: 0 },
+      uRipple0Y: { value: 0 },
     }),
     []
   );
 
   useFrame(({ clock }) => {
-    uniforms.uTime.value = clock.getElapsedTime();
+    const t = clock.getElapsedTime();
+    uniforms.uTime.value = t;
     uniforms.uBass.value += (audioState.bassLevel - uniforms.uBass.value) * 0.1;
     uniforms.uKick.value += (audioState.kick - uniforms.uKick.value) * 0.3;
     uniforms.uMid.value += (audioState.midLevel - uniforms.uMid.value) * 0.07;
+    uniforms.uMouseX.value += (mousePos.x - uniforms.uMouseX.value) * 0.05;
+    uniforms.uMouseY.value += (mousePos.y - uniforms.uMouseY.value) * 0.05;
+    uniforms.uHueShift.value = (hueTime * 0.01) % 1 * 0.08;
+
+    if (ripples.length > 0) {
+      const latest = ripples[ripples.length - 1];
+      const age = (Date.now() - latest.time) / 1000;
+      const strength = Math.max(0, 1 - age / 2.5);
+      uniforms.uRipple0.value += (strength - uniforms.uRipple0.value) * 0.15;
+      uniforms.uRipple0X.value = latest.x;
+      uniforms.uRipple0Y.value = latest.y;
+    } else {
+      uniforms.uRipple0.value *= 0.95;
+    }
   });
 
   return (
-    <mesh ref={meshRef} rotation={[-Math.PI / 2, 0, 0]} position={[0, -2.5, 0]}>
-      <planeGeometry args={[24, 24, 60, 60]} />
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -2.5, 0]}>
+      <planeGeometry args={[24, 24, 80, 80]} />
       <shaderMaterial
         vertexShader={floorVertexShader}
         fragmentShader={floorFragmentShader}
@@ -364,8 +465,7 @@ function ReactiveFloor({ audioState }: { audioState: AudioState }) {
   );
 }
 
-// Floating abstract cubes
-function FloatingCubes({ audioState }: { audioState: AudioState }) {
+function FloatingCubes({ audioState, hueTime }: { audioState: AudioState; hueTime: number }) {
   const groupRef = useRef<THREE.Group>(null!);
   const cubeData = useMemo(
     () =>
@@ -384,6 +484,7 @@ function FloatingCubes({ audioState }: { audioState: AudioState }) {
   useFrame(({ clock }) => {
     if (!groupRef.current) return;
     const t = clock.getElapsedTime();
+    const hue = (hueTime * 0.01) % 1;
     groupRef.current.children.forEach((child, i) => {
       const d = cubeData[i];
       child.position.y = d.y + Math.sin(t * d.speed + d.phase) * 0.3;
@@ -393,6 +494,7 @@ function FloatingCubes({ audioState }: { audioState: AudioState }) {
       child.scale.setScalar(scale);
       const mat = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
       mat.opacity = 0.3 + audioState.midLevel * 0.4;
+      if (i % 3 === 0) mat.color.setHSL(0.48 + hue * 0.08, 0.8, 0.5);
     });
   });
 
@@ -415,14 +517,16 @@ function FloatingCubes({ audioState }: { audioState: AudioState }) {
   );
 }
 
-// Fog / atmosphere sphere
-function AtmosphereSphere({ audioState }: { audioState: AudioState }) {
+function AtmosphereSphere({ audioState, idleFactor }: { audioState: AudioState; idleFactor: number }) {
   const meshRef = useRef<THREE.Mesh>(null!);
 
-  useFrame(() => {
+  useFrame(({ clock }) => {
     if (!meshRef.current) return;
     const mat = meshRef.current.material as THREE.MeshBasicMaterial;
-    mat.opacity = 0.06 + audioState.bassLevel * 0.04;
+    mat.opacity = 0.06 + audioState.bassLevel * 0.04 + idleFactor * 0.02;
+    const t = clock.getElapsedTime();
+    const hue = (t * 0.005) % 1;
+    mat.color.setHSL(0.48 + hue * 0.1, 0.3, 0.06);
   });
 
   return (
@@ -439,36 +543,99 @@ function AtmosphereSphere({ audioState }: { audioState: AudioState }) {
   );
 }
 
-export function GrottoScene({ audioState }: GrottoSceneProps) {
-  const { gl, scene, camera } = useThree();
+function GlowOrbs({ audioState }: { audioState: AudioState }) {
+  const groupRef = useRef<THREE.Group>(null!);
+  const orbData = useMemo(
+    () =>
+      Array.from({ length: 6 }, (_, i) => ({
+        angle: (i / 6) * Math.PI * 2,
+        radius: 2.2 + Math.random() * 0.5,
+        speed: 0.1 + Math.random() * 0.15,
+        yOff: (Math.random() - 0.5) * 2,
+        size: 0.12 + Math.random() * 0.08,
+      })),
+    []
+  );
+
+  useFrame(({ clock }) => {
+    if (!groupRef.current) return;
+    const t = clock.getElapsedTime();
+    groupRef.current.children.forEach((child, i) => {
+      const d = orbData[i];
+      const a = d.angle + t * d.speed;
+      child.position.x = Math.cos(a) * d.radius;
+      child.position.z = Math.sin(a) * d.radius;
+      child.position.y = d.yOff + Math.sin(t * 0.4 + i) * 0.3;
+      const mat = (child as THREE.Mesh).material as THREE.MeshBasicMaterial;
+      mat.opacity = 0.15 + audioState.bassLevel * 0.3 + audioState.kick * 0.2;
+      const scale = d.size * (1 + audioState.kick * 0.8);
+      child.scale.setScalar(scale);
+    });
+  });
+
+  return (
+    <group ref={groupRef}>
+      {orbData.map((d, i) => (
+        <mesh key={i}>
+          <sphereGeometry args={[1, 8, 8]} />
+          <meshBasicMaterial
+            color={i % 2 === 0 ? 0x00eedd : 0x8844ff}
+            transparent
+            opacity={0.2}
+            blending={THREE.AdditiveBlending}
+            depthWrite={false}
+          />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+export function GrottoScene({ audioState, mousePos, ripples, idleFactor }: GrottoSceneProps) {
+  const { gl, scene } = useThree();
+  const hueTimeRef = useRef(0);
 
   useEffect(() => {
     scene.fog = new THREE.FogExp2(0x040808, 0.055);
     gl.setClearColor(0x050808, 1);
   }, [gl, scene]);
 
-  useFrame(({ camera: cam }) => {
-    const t = performance.now() * 0.001;
+  useFrame(({ camera: cam, clock }) => {
+    const t = clock.getElapsedTime();
+    hueTimeRef.current = t;
+
+    const idleIntensity = idleFactor * 0.4;
+
     (cam as THREE.PerspectiveCamera).position.x =
-      Math.sin(t * 0.07) * 0.6 + Math.sin(t * 0.13) * 0.3 * audioState.bassLevel;
+      Math.sin(t * 0.07) * (0.6 + idleIntensity * 0.5) +
+      Math.sin(t * 0.13) * 0.3 * audioState.bassLevel +
+      mousePos.x * 0.3;
     (cam as THREE.PerspectiveCamera).position.y =
-      Math.sin(t * 0.05) * 0.35 + audioState.kick * 0.12;
+      Math.sin(t * 0.05) * (0.35 + idleIntensity * 0.3) +
+      audioState.kick * 0.12 +
+      mousePos.y * 0.15;
+    (cam as THREE.PerspectiveCamera).position.z =
+      5 - idleIntensity * 0.8;
     cam.lookAt(0, 0, 0);
   });
 
+  const mainLightIntensity = 0.5 + audioState.bassLevel * 1.5 + idleFactor * 0.3;
+  const accentIntensity = 0.3 + audioState.midLevel + idleFactor * 0.2;
+
   return (
     <>
-      <ambientLight intensity={0.03} />
-      <pointLight position={[0, 3, 0]} intensity={0.5 + audioState.bassLevel * 1.5} color={0x00ffee} distance={8} />
-      <pointLight position={[-4, -1, -2]} intensity={0.3 + audioState.midLevel} color={0x8830ff} distance={12} />
-      <pointLight position={[4, 1, -3]} intensity={0.2} color={0x003333} distance={10} />
+      <ambientLight intensity={0.03 + idleFactor * 0.01} />
+      <pointLight position={[0, 3, 0]} intensity={mainLightIntensity} color={0x00ffee} distance={8} />
+      <pointLight position={[-4, -1, -2]} intensity={accentIntensity} color={0x8830ff} distance={12} />
+      <pointLight position={[4, 1, -3]} intensity={0.2 + idleFactor * 0.15} color={0x003333} distance={10} />
 
-      <AtmosphereSphere audioState={audioState} />
-      <ReactiveFloor audioState={audioState} />
-      <WubOrb audioState={audioState} />
-      <IndustrialRings audioState={audioState} />
-      <FloatingCubes audioState={audioState} />
-      <ParticleField audioState={audioState} />
+      <AtmosphereSphere audioState={audioState} idleFactor={idleFactor} />
+      <ReactiveFloor audioState={audioState} mousePos={mousePos} ripples={ripples} hueTime={hueTimeRef.current} />
+      <WubOrb audioState={audioState} mousePos={mousePos} hueTime={hueTimeRef.current} />
+      <IndustrialRings audioState={audioState} hueTime={hueTimeRef.current} />
+      <FloatingCubes audioState={audioState} hueTime={hueTimeRef.current} />
+      <ParticleField audioState={audioState} hueTime={hueTimeRef.current} />
+      <GlowOrbs audioState={audioState} />
     </>
   );
 }

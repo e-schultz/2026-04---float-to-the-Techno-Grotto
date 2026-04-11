@@ -30,16 +30,23 @@ export class AudioEngine {
   private hatSynth: Tone.MetalSynth | null = null;
   private padSynth: Tone.PolySynth | null = null;
   private clapSynth: Tone.NoiseSynth | null = null;
+  private droneSynth: Tone.Synth | null = null;
+  private droneSynth2: Tone.Synth | null = null;
+  private textureSynth: Tone.MetalSynth | null = null;
+  private tapSynth: Tone.MembraneSynth | null = null;
 
   private kickSeq: Tone.Sequence | null = null;
   private bassSeq: Tone.Sequence | null = null;
   private hatSeq: Tone.Sequence | null = null;
   private padSeq: Tone.Sequence | null = null;
   private clapSeq: Tone.Sequence | null = null;
+  private textureLoop: Tone.Loop | null = null;
 
   private kickMeter: Tone.Meter | null = null;
   private bassMeter: Tone.Meter | null = null;
   private masterMeter: Tone.Meter | null = null;
+
+  private masterEQ: Tone.EQ3 | null = null;
 
   private animFrame: number | null = null;
   private ready = false;
@@ -52,9 +59,9 @@ export class AudioEngine {
     const masterLimiter = new Tone.Limiter(-3).toDestination();
     const masterReverb = new Tone.Reverb({ decay: 4, wet: 0.15 });
     await masterReverb.generate();
-    const masterEQ = new Tone.EQ3({ low: 2, mid: -1, high: -2 });
+    this.masterEQ = new Tone.EQ3({ low: 2, mid: -1, high: -2 });
     masterReverb.connect(masterLimiter);
-    masterEQ.connect(masterReverb);
+    this.masterEQ.connect(masterReverb);
 
     // Kick
     this.kickMeter = new Tone.Meter();
@@ -66,7 +73,7 @@ export class AudioEngine {
     });
     const kickDist = new Tone.Distortion(0.15);
     const kickFilter = new Tone.Filter(80, "highpass");
-    this.kickSynth.chain(kickDist, kickFilter, this.kickMeter, masterEQ);
+    this.kickSynth.chain(kickDist, kickFilter, this.kickMeter, this.masterEQ);
 
     // Sub bass
     this.bassMeter = new Tone.Meter();
@@ -82,11 +89,10 @@ export class AudioEngine {
 
     this.wubLfo = new Tone.LFO({ frequency: "4n", min: 60, max: 600, type: "sine" }).start();
     this.wubLfo.connect(bassFilter.frequency);
-    this.subBass.chain(bassFilter, bassDistortion, bassChorus, this.bassMeter, masterEQ);
+    this.subBass.chain(bassFilter, bassDistortion, bassChorus, this.bassMeter, this.masterEQ);
 
     // Hi-hats
     this.hatSynth = new Tone.MetalSynth({
-      frequency: 800,
       envelope: { attack: 0.001, decay: 0.04, release: 0.01 },
       harmonicity: 5.1,
       modulationIndex: 32,
@@ -97,7 +103,7 @@ export class AudioEngine {
     const hatFilter = new Tone.Filter(5000, "highpass");
     const hatVerb = new Tone.Reverb({ decay: 0.8, wet: 0.2 });
     await hatVerb.generate();
-    this.hatSynth.chain(hatFilter, hatVerb, masterEQ);
+    this.hatSynth.chain(hatFilter, hatVerb, this.masterEQ);
 
     // Clap
     this.clapSynth = new Tone.NoiseSynth({
@@ -107,7 +113,7 @@ export class AudioEngine {
     });
     const clapFilter = new Tone.Filter({ type: "bandpass", frequency: 1800, Q: 2 });
     const clapDist = new Tone.Distortion(0.4);
-    this.clapSynth.chain(clapFilter, clapDist, masterEQ);
+    this.clapSynth.chain(clapFilter, clapDist, this.masterEQ);
 
     // Pad
     this.padSynth = new Tone.PolySynth(Tone.Synth, {
@@ -120,10 +126,55 @@ export class AudioEngine {
     const padVerb = new Tone.Reverb({ decay: 8, wet: 0.6 });
     await padVerb.generate();
     const padFilter = new Tone.Filter({ type: "lowpass", frequency: 800, Q: 0.5 });
-    this.padSynth.chain(padFilter, padChorus, padVerb, masterEQ);
+    this.padSynth.chain(padFilter, padChorus, padVerb, this.masterEQ);
+
+    // Sub-harmonic drone layer
+    this.droneSynth = new Tone.Synth({
+      oscillator: { type: "sine" },
+      envelope: { attack: 4, decay: 0, sustain: 1, release: 6 },
+      volume: -28,
+    });
+    const droneFilt = new Tone.Filter({ type: "lowpass", frequency: 120, Q: 1 });
+    const droneVerb = new Tone.Reverb({ decay: 12, wet: 0.7 });
+    await droneVerb.generate();
+    this.droneSynth.chain(droneFilt, droneVerb, this.masterEQ);
+
+    this.droneSynth2 = new Tone.Synth({
+      oscillator: { type: "sine" },
+      envelope: { attack: 6, decay: 0, sustain: 1, release: 8 },
+      volume: -32,
+    });
+    const droneFilt2 = new Tone.Filter({ type: "lowpass", frequency: 80, Q: 0.5 });
+    this.droneSynth2.chain(droneFilt2, droneVerb, this.masterEQ);
+
+    // Texture one-shots (rare metallic pings / clicks)
+    this.textureSynth = new Tone.MetalSynth({
+      envelope: { attack: 0.001, decay: 0.08, release: 0.3 },
+      harmonicity: 8,
+      modulationIndex: 16,
+      resonance: 6000,
+      octaves: 2,
+      volume: -34,
+    });
+    const textureVerb = new Tone.Reverb({ decay: 6, wet: 0.85 });
+    await textureVerb.generate();
+    const textureDelay = new Tone.FeedbackDelay({ delayTime: "8n.", feedback: 0.3, wet: 0.4 });
+    this.textureSynth.chain(textureDelay, textureVerb, this.masterEQ);
+
+    // Tap/click interaction synth
+    this.tapSynth = new Tone.MembraneSynth({
+      pitchDecay: 0.04,
+      octaves: 4,
+      envelope: { attack: 0.001, decay: 0.15, sustain: 0, release: 0.08 },
+      volume: -14,
+    });
+    const tapVerb = new Tone.Reverb({ decay: 3, wet: 0.5 });
+    await tapVerb.generate();
+    const tapFilter = new Tone.Filter({ type: "lowpass", frequency: 1200, Q: 2 });
+    this.tapSynth.chain(tapFilter, tapVerb, this.masterEQ);
 
     this.masterMeter = new Tone.Meter();
-    masterEQ.connect(this.masterMeter);
+    this.masterEQ.connect(this.masterMeter);
 
     this.ready = true;
     this._startAnalysisLoop();
@@ -135,11 +186,17 @@ export class AudioEngine {
     this.hatSeq?.dispose();
     this.clapSeq?.dispose();
     this.padSeq?.dispose();
+    this.textureLoop?.dispose();
     this.kickSeq = null;
     this.bassSeq = null;
     this.hatSeq = null;
     this.clapSeq = null;
     this.padSeq = null;
+    this.textureLoop = null;
+  }
+
+  private _humanize(time: number, amount: number): number {
+    return time + (Math.random() - 0.5) * amount;
   }
 
   private _buildAndStartSequences() {
@@ -151,7 +208,8 @@ export class AudioEngine {
       (time) => {
         try {
           if (kickPattern[kickStep % kickPattern.length]) {
-            this.kickSynth?.triggerAttackRelease("C1", "8n", time);
+            const vel = 0.85 + Math.random() * 0.15;
+            this.kickSynth?.triggerAttackRelease("C1", "8n", this._humanize(time, 0.003), vel);
           }
           kickStep++;
         } catch (_) { kickStep++; }
@@ -167,11 +225,13 @@ export class AudioEngine {
       (time) => {
         try {
           if (bassGate[bassStep % bassGate.length]) {
-            this.subBass?.triggerAttackRelease(
-              bassNotes[bassStep % bassNotes.length],
-              "8n",
-              time
-            );
+            const noteIdx = bassStep % bassNotes.length;
+            let note = bassNotes[noteIdx];
+            if (Math.random() < 0.08) {
+              const variants = ["C1", "D#1", "F1", "G1", "Bb0"];
+              note = variants[Math.floor(Math.random() * variants.length)];
+            }
+            this.subBass?.triggerAttackRelease(note, "8n", this._humanize(time, 0.005));
           }
           bassStep++;
         } catch (_) { bassStep++; }
@@ -185,10 +245,12 @@ export class AudioEngine {
     this.hatSeq = new Tone.Sequence(
       (time) => {
         try {
-          if (hatPattern[hatStep % hatPattern.length]) {
-            const vel = hatStep % 4 === 1 ? 0.9 : 0.4;
+          const shouldPlay = hatPattern[hatStep % hatPattern.length];
+          const ghostHit = !shouldPlay && Math.random() < 0.06;
+          if (shouldPlay || ghostHit) {
+            const vel = ghostHit ? 0.15 : (hatStep % 4 === 1 ? (0.8 + Math.random() * 0.2) : (0.3 + Math.random() * 0.15));
             const dur = hatStep % 8 === 7 ? "64n" : "32n";
-            this.hatSynth?.triggerAttackRelease(dur, time, vel);
+            this.hatSynth?.triggerAttackRelease(dur, this._humanize(time, 0.004), vel);
           }
           hatStep++;
         } catch (_) { hatStep++; }
@@ -203,7 +265,7 @@ export class AudioEngine {
       (time) => {
         try {
           if (clapPattern[clapStep % clapPattern.length]) {
-            this.clapSynth?.triggerAttackRelease("16n", time);
+            this.clapSynth?.triggerAttackRelease("16n", this._humanize(time, 0.006));
           }
           clapStep++;
         } catch (_) { clapStep++; }
@@ -224,7 +286,15 @@ export class AudioEngine {
         try {
           const chord = padChords[padStep % padChords.length];
           if (chord.length > 0) {
-            this.padSynth?.triggerAttackRelease(chord, "2n", time);
+            const evolved = chord.map((n) => {
+              if (Math.random() < 0.12) {
+                const semi = Math.random() < 0.5 ? 1 : -1;
+                const midi = Tone.Frequency(n).toMidi() + semi;
+                return Tone.Frequency(midi, "midi").toNote();
+              }
+              return n;
+            });
+            this.padSynth?.triggerAttackRelease(evolved, "2n", time);
           }
           padStep++;
         } catch (_) { padStep++; }
@@ -233,26 +303,41 @@ export class AudioEngine {
       "1n"
     );
 
+    this.textureLoop = new Tone.Loop((time) => {
+      try {
+        if (Math.random() < 0.03) {
+          this.textureSynth?.triggerAttackRelease("32n", time, 0.2 + Math.random() * 0.3);
+        }
+      } catch (_) {}
+    }, "1n");
+
+    // Start drone notes
+    try {
+      this.droneSynth?.triggerAttack("C0", "+0.2");
+      this.droneSynth2?.triggerAttack("G0", "+0.5");
+    } catch (_) {}
+
     this.kickSeq.start(0);
     this.bassSeq.start(0);
     this.hatSeq.start(0);
     this.clapSeq.start(0);
     this.padSeq.start(0);
+    this.textureLoop.start(0);
   }
 
   private _startAnalysisLoop() {
     const update = () => {
       if (this.state.isPlaying) {
         const bassDb = this.bassMeter?.getValue() ?? -Infinity;
-        const bassDbn = typeof bassDb === "number" ? bassDb : (bassDb as Float32Array)[0];
+        const bassDbn = typeof bassDb === "number" ? bassDb : (bassDb as unknown as number[])[0];
         this.state.bassLevel = Math.min(1, Math.max(0, (bassDbn + 60) / 60));
 
         const masterDb = this.masterMeter?.getValue() ?? -Infinity;
-        const masterDbn = typeof masterDb === "number" ? masterDb : (masterDb as Float32Array)[0];
+        const masterDbn = typeof masterDb === "number" ? masterDb : (masterDb as unknown as number[])[0];
         this.state.midLevel = Math.min(1, Math.max(0, (masterDbn + 50) / 50));
 
         const kickDb = this.kickMeter?.getValue() ?? -Infinity;
-        const kickDbn = typeof kickDb === "number" ? kickDb : (kickDb as Float32Array)[0];
+        const kickDbn = typeof kickDb === "number" ? kickDb : (kickDb as unknown as number[])[0];
         this.state.kick = Math.min(1, Math.max(0, (kickDbn + 40) / 40));
 
         const now = Tone.now();
@@ -281,11 +366,19 @@ export class AudioEngine {
     };
   }
 
+  triggerTap() {
+    if (!this.state.isPlaying || !this.tapSynth) return;
+    try {
+      const notes = ["C2", "D#2", "F2", "G2", "A#2"];
+      const note = notes[Math.floor(Math.random() * notes.length)];
+      this.tapSynth.triggerAttackRelease(note, "16n", "+0", 0.5 + Math.random() * 0.3);
+    } catch (_) {}
+  }
+
   async start() {
     if (this.state.isPlaying) return;
     if (!this.ready) await this.init();
 
-    // Always reset transport position to 0 before starting
     Tone.getTransport().stop();
     Tone.getTransport().position = 0;
 
@@ -299,6 +392,10 @@ export class AudioEngine {
   stop() {
     if (!this.state.isPlaying) return;
     this.state.isPlaying = false;
+    try {
+      this.droneSynth?.triggerRelease();
+      this.droneSynth2?.triggerRelease();
+    } catch (_) {}
     Tone.getTransport().stop();
     Tone.getTransport().position = 0;
     this._disposeSequences();
@@ -319,6 +416,8 @@ export class AudioEngine {
     if (this.subBass) this.subBass.volume.value = -12 + intensity * 6;
     if (this.hatSynth) this.hatSynth.volume.value = -24 + intensity * 6;
     if (this.padSynth) this.padSynth.set({ volume: -22 + intensity * 8 });
+    if (this.droneSynth) this.droneSynth.volume.value = -28 + intensity * 8;
+    if (this.droneSynth2) this.droneSynth2.volume.value = -32 + intensity * 8;
     if (this.wubLfo) {
       this.wubLfo.min = 60 + intensity * 120;
       this.wubLfo.max = 400 + intensity * 600;
@@ -337,6 +436,10 @@ export class AudioEngine {
     this.hatSynth?.dispose();
     this.clapSynth?.dispose();
     this.padSynth?.dispose();
+    this.droneSynth?.dispose();
+    this.droneSynth2?.dispose();
+    this.textureSynth?.dispose();
+    this.tapSynth?.dispose();
     this.wubLfo?.dispose();
     this.kickMeter?.dispose();
     this.bassMeter?.dispose();
